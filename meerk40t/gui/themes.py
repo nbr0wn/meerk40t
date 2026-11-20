@@ -205,8 +205,9 @@ class Themes(Service):
         tp["stop_fg_focus"] = wx.BLACK if self._dark else wx.WHITE
 
         tp["arm_bg"] = wx.Colour(172, 29, 27)  # Casual red
-        tp["arm_fg"] = wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOWTEXT)
+        tp["arm_fg"] = wx.WHITE  # on arm_bg (red)
         tp["arm_bg_inactive"] = wx.Colour("GOLD")
+        tp["arm_fg_inactive"] = wx.BLACK  # on arm_bg_inactive (gold)
         tp["arm_fg_focus"] = wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOW)
 
     def set_window_colors(self, win: wx.Window):

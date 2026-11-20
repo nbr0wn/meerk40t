@@ -364,7 +364,7 @@ class LaserPanel(wx.Panel):
         self.arm_toggle.SetBitmap(
             icon_closed_door.GetBitmap(
                 resize=self.icon_size,
-                color=self.context.themes.get("arm_fg"),
+                color=self.context.themes.get("arm_fg_inactive"),
             )
         )
         self.arm_toggle.SetBitmapFocus(
@@ -372,7 +372,7 @@ class LaserPanel(wx.Panel):
                 resize=self.icon_size,
             )
         )
-        self.arm_toggle.SetForegroundColour(self.context.themes.get("arm_fg"))
+        self.arm_toggle.SetForegroundColour(self.context.themes.get("arm_fg_inactive"))
         self.arm_toggle.SetFocusColour(self.context.themes.get("stop_fg_focus"))
         self.armed = False
         sizer_control_misc.Add(self.arm_toggle, 1, wx.EXPAND, 0)
@@ -963,6 +963,7 @@ class LaserPanel(wx.Panel):
                 self.Layout()
             if self.armed:
                 self.arm_toggle.SetBackgroundColour(self.context.themes.get("arm_bg"))
+                self.arm_toggle.SetForegroundColour(self.context.themes.get("arm_fg"))
                 self.button_start.SetBackgroundColour(
                     self.context.themes.get("start_bg")
                 )
@@ -987,6 +988,9 @@ class LaserPanel(wx.Panel):
                 self.arm_toggle.SetBackgroundColour(
                     self.context.themes.get("arm_bg_inactive")
                 )
+                self.arm_toggle.SetForegroundColour(
+                    self.context.themes.get("arm_fg_inactive")
+                )
                 self.button_start.SetBackgroundColour(
                     self.context.themes.get("start_bg_inactive")
                 )
@@ -994,7 +998,7 @@ class LaserPanel(wx.Panel):
                 self.arm_toggle.SetBitmap(
                     icon_closed_door.GetBitmap(
                         resize=self.icon_size,
-                        color=self.context.themes.get("arm_fg"),
+                        color=self.context.themes.get("arm_fg_inactive"),
                     )
                 )
                 self.arm_toggle.SetBitmapFocus(
