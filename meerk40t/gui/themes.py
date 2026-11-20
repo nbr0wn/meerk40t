@@ -8,6 +8,8 @@ import wx
 
 from meerk40t.kernel import Service
 
+from . import uipolish
+
 
 def color_distance(c1: wx.Colour, c2: wx.Colour) -> bool:
     """
@@ -208,6 +210,8 @@ class Themes(Service):
         tp["arm_fg_focus"] = wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOW)
 
     def set_window_colors(self, win: wx.Window):
+        if uipolish.NATIVE_COLORS:
+            return
         tp = self._theme_properties
         win.SetBackgroundColour(tp["win_bg"])
         win.SetForegroundColour(tp["win_fg"])

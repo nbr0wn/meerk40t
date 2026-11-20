@@ -46,6 +46,7 @@ import threading
 
 import wx
 
+from meerk40t.gui import uipolish
 from meerk40t.gui.icons import STD_ICON_SIZE
 from meerk40t.kernel import Job
 from meerk40t.svgelements import Color
@@ -1684,7 +1685,21 @@ class Art:
             c_mode = COLOR_MODE_DARK  # dark mode
         self.color_mode = c_mode
 
-        if self.color_mode == COLOR_MODE_DARK:
+        if self.color_mode == COLOR_MODE_DARK and uipolish.NATIVE_COLORS:
+            # Derive the dark palette from the GTK theme instead of black/white.
+            sysc = wx.SystemSettings().GetColour
+            face = sysc(wx.SYS_COLOUR_BTNFACE)
+            text = sysc(wx.SYS_COLOUR_BTNTEXT)
+            self.ribbon_background = copy.copy(face)
+            self.button_face = copy.copy(face)
+            self.inactive_background = sysc(wx.SYS_COLOUR_WINDOW)
+            self.button_face_hover = sysc(wx.SYS_COLOUR_BTNHILIGHT)
+            self.highlight = sysc(wx.SYS_COLOUR_HIGHLIGHT)
+            self.text_color = wx.Colour(text.red, text.green, text.blue)
+            self.text_color_inactive = uipolish.blend(face, text, 0.6)
+            self.text_color_disabled = uipolish.blend(face, text, 0.4)
+            self.black_color = uipolish.blend(face, text, 0.2)
+        elif self.color_mode == COLOR_MODE_DARK:
             # This is rather crude, as a dark mode could also
             # be based e.g. on a dark blue scheme
             self.button_face = wx.BLACK

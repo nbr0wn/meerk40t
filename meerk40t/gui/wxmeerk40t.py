@@ -7,6 +7,10 @@ from datetime import datetime
 import wx
 from wx import aui
 
+from meerk40t.gui import uipolish
+
+uipolish.install()
+
 from meerk40t.core.units import Length
 from meerk40t.gui.consolepanel import Console
 from meerk40t.gui.navigationpanels import Navigation

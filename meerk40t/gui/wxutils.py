@@ -13,6 +13,8 @@ from wx.lib.scrolledpanel import ScrolledPanel as SP
 from meerk40t.core.units import ACCEPTED_ANGLE_UNITS, ACCEPTED_UNITS, Angle, Length
 from meerk40t.svgelements import Matrix
 
+from . import uipolish
+
 _ = wx.GetTranslation
 
 
@@ -573,6 +575,8 @@ def create_menu(gui, node, elements):
 # GUI CONTROL OVERRIDES
 ##############
 def set_color_according_to_theme(control, background, foreground):
+    if uipolish.NATIVE_COLORS:
+        return
     win = control
     while win is not None:
         if hasattr(win, "context") and hasattr(win.context, "themes"):
