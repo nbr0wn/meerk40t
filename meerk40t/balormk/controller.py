@@ -13,6 +13,7 @@ from copy import copy
 from usb.core import NoBackendError
 
 from meerk40t.balormk.mock_connection import MockConnection
+from meerk40t.balormk import usbtrace
 from meerk40t.balormk.usb_connection import USBConnection
 
 DRIVER_STATE_RAPID = 0
@@ -254,6 +255,7 @@ class GalvoController:
         self._is_opening = False
         self._abort_open = False
         self._disable_connect = False
+        self._opening_thread = None
 
         self._light_bit = 8
         self._foot_bit = 15
@@ -321,6 +323,7 @@ class GalvoController:
             return "busy", "program"
 
     def set_disable_connect(self, status):
+        usbtrace.event("CTRL", "set_disable_connect", stack=False)
         self._disable_connect = status
 
     def added(self):
@@ -345,10 +348,12 @@ class GalvoController:
         return self._is_opening
 
     def abort_connect(self):
+        usbtrace.event("CTRL", "abort_connect", stack=True)
         self._abort_open = True
         self.usb_log("Connect Attempts Aborted")
 
     def disconnect(self):
+        usbtrace.event("CTRL", "disconnect", stack=True)
         try:
             self.connection.close(self._machine_index)
         except (ConnectionError, ConnectionRefusedError, AttributeError):
@@ -366,6 +371,15 @@ class GalvoController:
             raise ConnectionRefusedError(
                 "LMC was unreachable. Explicit connect required."
             )
+        if self._opening_thread == threading.get_ident():
+            # Called from a send() inside init_laser().
+            if self.connection is not None and self.connection.is_open(
+                self._machine_index
+            ):
+                return
+            # The connection dropped mid-initialisation. Fail this send; the
+            # outer connect loop counts the attempt and retries.
+            raise ConnectionRefusedError("Connection dropped during initialisation.")
         if self.connection is None:
             if self.service.setting(bool, "mock", False) or self.force_mock:
                 self.connection = MockConnection(self.usb_log, device=self.service)
@@ -381,8 +395,13 @@ class GalvoController:
             try:
                 if self.connection.open(self._machine_index) < 0:
                     raise ConnectionError
-                self.init_laser()
-            except (ConnectionError, ConnectionRefusedError):
+                self._opening_thread = threading.get_ident()
+                try:
+                    self.init_laser()
+                finally:
+                    self._opening_thread = None
+            except (ConnectionError, ConnectionRefusedError) as e:
+                usbtrace.event("CTRL", f"connect attempt {count} failed: {e!r}")
                 if count == 0:
                     self.service("clone_init\n")
                 time.sleep(0.3)
@@ -429,6 +448,12 @@ class GalvoController:
         if not self.connection:
             return ERR
         with self._send_lock:
+            if read and hasattr(self.connection, "transact"):
+                try:
+                    r = self.connection.transact(self._machine_index, data)
+                    return struct.unpack("<4H", r)
+                except (ConnectionError, struct.error):
+                    return ERR
             try:
                 self.connection.write(self._machine_index, data)
             except ConnectionError:
@@ -819,6 +844,7 @@ class GalvoController:
                 return
 
     def abort(self, dummy_packet=True):
+        usbtrace.event("CTRL", "abort", stack=True)
         if self.mode == DRIVER_STATE_RAW:
             return
         self.stop_execute()
@@ -839,18 +865,21 @@ class GalvoController:
         self.mode = DRIVER_STATE_RAPID
 
     def pause(self):
+        usbtrace.event("CTRL", "pause", stack=False)
         if self.mode == DRIVER_STATE_RAW:
             return
         self.paused = True
         self.stop_list()
 
     def resume(self):
+        usbtrace.event("CTRL", "resume", stack=False)
         if self.mode == DRIVER_STATE_RAW:
             return
         self.restart_list()
         self.paused = False
 
     def init_laser(self):
+        usbtrace.event("CTRL", "init_laser", stack=False)
         if self.mode == DRIVER_STATE_RAW:
             return
         cor_file = self.service.corfile if self.service.corfile_enabled else None
@@ -874,6 +903,10 @@ class GalvoController:
 
         self.usb_log("Initializing Laser")
         serial_number = self.get_serial_number()
+        if serial_number == (-1, -1, -1, -1):
+            # No reply: count this as a failed connect rather than carrying on.
+            self.serial_number_found = None
+            raise ConnectionError("Board did not answer the serial number request.")
         content = "0x"
         for nibble in serial_number:
             content += f"{nibble:04x}"
@@ -1572,6 +1605,7 @@ class GalvoController:
         return self._command(StopExecute)
 
     def stop_list(self):
+        usbtrace.event("CTRL", "stop_list", stack=True)
         return self._command(StopList)
 
     def write_port(self):
