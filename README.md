@@ -1,5 +1,5 @@
 
-## I appreciate all the hard work that went into MeerK40t - I just didn't enjoy the UI.  This a full-on AI-based UI update based on my personal tastes.  Use at your own risk.
+## I appreciate all the hard work that went into MeerK40t - I just didn't enjoy the dark mode UI.  This a full-on AI-based UI update based on my personal tastes.  Use at your own risk.
 
 # Welcome to MeerK40t!
 MeerK40t (pronounced MeerKat) is a built-from-the-ground-up MIT licensed open-source laser cutting software.
