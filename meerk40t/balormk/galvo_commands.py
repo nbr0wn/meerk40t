@@ -810,6 +810,9 @@ def plugin(service, lifecycle):
         all_arguments_required=True,
     )
     def galvo_port(command, channel, _, off, bit=None, duration=None, **kwgs):
+        if not 0 <= bit <= 15:
+            channel(_("Port bit must be between 0 and 15."))
+            return
         off = off == "off"
         if off:
             service.driver.connection.port_off(bit)
