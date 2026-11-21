@@ -882,7 +882,6 @@ class GalvoController:
         usbtrace.event("CTRL", "init_laser", stack=False)
         if self.mode == DRIVER_STATE_RAW:
             return
-        cor_file = self.service.corfile if self.service.corfile_enabled else None
         first_pulse_killer = self.service.first_pulse_killer
         pwm_pulse_width = self.service.pwm_pulse_width
         pwm_half_period = self.service.pwm_half_period
@@ -933,7 +932,7 @@ class GalvoController:
 
         self.reset()
         self.usb_log("Reset")
-        self.write_correction_file(cor_file)
+        self.send_correction()
         self.enable_laser()
         self.usb_log("Laser Enabled")
         self.set_control_mode(control_mode)
@@ -1099,6 +1098,26 @@ class GalvoController:
             self.write_blank_correct_file()
             self.usb_log("Correction file set to blank.")
             return
+
+    def send_correction(self):
+        """
+        Upload the active correction: the .cor file when enabled, otherwise the
+        generated field correction when enabled, otherwise a blank table.
+        """
+        service = self.service
+        if service.corfile_enabled:
+            self.write_correction_file(service.corfile)
+            return
+        if getattr(service, "fieldcor_enabled", False):
+            table, clipped = service.field_correction_table()
+            self._write_correction_table(table)
+            self.usb_log("Field correction sent")
+            if clipped:
+                self.usb_log(
+                    f"Field correction: {clipped} offsets exceeded the board range"
+                )
+            return
+        self.write_correction_file(None)
 
     @staticmethod
     def get_scale_from_correction_file(filename):

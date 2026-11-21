@@ -4,6 +4,9 @@ Galvo Device
 Defines how the balor device interacts with the scene, and accepts data via the spooler.
 """
 
+import json
+import threading
+
 from meerk40t.balormk.driver import BalorDriver
 from meerk40t.core.spoolers import Spooler
 from meerk40t.core.units import Angle, Length
@@ -970,6 +973,115 @@ class BalorDevice(Service, Status):
         ]
         self.register_choices("balor-extra", choices)
 
+        # Hint for translation _("Field Correction")
+        fc_section = "_00_" + _("Field Correction")
+        choices = [
+            {
+                "attr": "fieldcor_enabled",
+                "object": self,
+                "default": False,
+                "type": bool,
+                "label": _("Enable generated correction"),
+                "tip": _(
+                    "Send a correction table computed from the values below when "
+                    "connecting. Ignored while a correction file is enabled."
+                ),
+                "section": fc_section,
+            },
+        ]
+        fc_terms = (
+            (
+                "scale",
+                100.0,
+                _("Scale"),
+                _("Size along this axis, in percent (100 = unchanged)."),
+            ),
+            (
+                "trapezoid",
+                0.0,
+                _("Trapezoid"),
+                _(
+                    "Percent size change along this axis at the far edge of the "
+                    "other axis (bottom edge for X, right edge for Y); the near "
+                    "edge changes the opposite way."
+                ),
+            ),
+            (
+                "bulge",
+                0.0,
+                _("Bulge"),
+                _(
+                    "Percent size change along this axis at both edges of the "
+                    "other axis, relative to the centre (barrel/pincushion)."
+                ),
+            ),
+            (
+                "skew",
+                0.0,
+                _("Skew"),
+                _(
+                    "Shift along this axis at the far edge of the other axis, in "
+                    "percent of half the field (parallelogram)."
+                ),
+            ),
+        )
+        for axis in ("x", "y"):
+            for term, default, label, tip in fc_terms:
+                choices.append(
+                    {
+                        "attr": f"fieldcor_{term}_{axis}",
+                        "object": self,
+                        "default": default,
+                        "type": float,
+                        "label": f"{label} {axis.upper()}",
+                        "tip": tip
+                        + " "
+                        + _("X and Y are the axes as shown on screen."),
+                        "section": fc_section,
+                        "subsection": f"_{10 if axis == 'x' else 20}_"
+                        + _("{axis} axis").format(axis=axis.upper()),
+                        "conditional": (self, "fieldcor_enabled"),
+                    }
+                )
+        choices.extend(
+            [
+                {
+                    "attr": "fieldcor_transpose",
+                    "object": self,
+                    "default": False,
+                    "type": bool,
+                    "label": _("Transpose table"),
+                    "tip": _(
+                        "Only if 'fieldcorrection test' shows a slanted shape "
+                        "instead of a wider one."
+                    ),
+                    "section": fc_section,
+                    "subsection": "_90_" + _("Table orientation"),
+                },
+                {
+                    "attr": "fieldcor_gain",
+                    "object": self,
+                    "default": -1.0,
+                    "type": float,
+                    "label": _("Table response"),
+                    "tip": _(
+                        "How far the board moves per unit in the correction "
+                        "table. -1 (BJJCZ LMCV4 fiber board): it moves the "
+                        "opposite way by the value. Calibration rounds measure "
+                        "and update it."
+                    ),
+                    "section": fc_section,
+                    "subsection": "_90_" + _("Table orientation"),
+                },
+            ]
+        )
+        self.register_choices("balor-fieldcor", choices)
+        # Last entered test-pattern measurements (JSON, field correction page).
+        self.setting(str, "fieldcor_measurements", "")
+        # Calibration rounds (JSON): the last two measured patterns with the
+        # correction and table response they were marked with.
+        self.setting(str, "fieldcor_rounds", "")
+
         choices = [
             {
                 "attr": "cf_1",
@@ -1095,6 +1207,265 @@ class BalorDevice(Service, Status):
         self.viewbuffer = ""
         self._simulate = False
         self.laser_status = "idle"
+
+    def field_correction_params(self):
+        from .fieldcorrection import IDENTITY
+
+        return {key: float(getattr(self, f"fieldcor_{key}")) for key in IDENTITY}
+
+    def field_test_side(self):
+        """Side (mm) of the calibration test square for this lens."""
+        from .fieldcorrection import test_side
+
+        return test_side(Length(self.lens_size).mm)
+
+    def _field_rounds(self):
+        try:
+            rounds = json.loads(self.fieldcor_rounds or "{}")
+        except (TypeError, ValueError):
+            rounds = {}
+        return rounds if isinstance(rounds, dict) else {}
+
+    def apply_field_correction_fit(self, squares):
+        """
+        One calibration round: fit the measured test pattern(s), update the
+        table response when the previous round allows measuring it, store and
+        enable the new correction and send it to the laser when connected.
+
+        Calling it again with the same measurements gives the same result: the
+        round is recomputed from the correction it was marked with.
+
+        @param squares: see fieldcorrection.fit_residual
+        @return: dict with round, previous, updated, residual, rms, gain,
+            gain_before, gain_estimated, max_error, done, warnings, clipped, sent
+        """
+        from .fieldcorrection import (
+            DEFAULT_GAIN,
+            DONE_TOLERANCE_MM,
+            IDENTITY,
+            as_square,
+            estimate_gain,
+            fit_residual,
+            max_error,
+            next_correction,
+            sanity_warnings,
+        )
+
+        squares = [as_square(sq) for sq in squares]
+        rounds = self._field_rounds()
+        last = rounds.get("last")
+        if last and last.get("squares") == squares:
+            current, before, number = last, rounds.get("prev"), rounds.get("round", 1)
+        else:
+            current = {
+                "squares": squares,
+                "params": self.field_correction_params()
+                if self.fieldcor_enabled
+                else dict(IDENTITY),
+                "gain": float(self.fieldcor_gain or DEFAULT_GAIN),
+            }
+            before, number = last, rounds.get("round", 0) + 1
+
+        residual, rms = fit_residual(squares, Length(self.lens_size).mm)
+        current["residual"] = list(residual)
+        estimated = None
+        if before and before.get("residual"):
+            estimated = estimate_gain(before, current)
+        gain = estimated if estimated is not None else float(
+            self.fieldcor_gain or DEFAULT_GAIN
+        )
+        updated = next_correction(current["params"], current["gain"], gain, residual)
+
+        self.fieldcor_rounds = json.dumps(
+            {"round": number, "last": current, "prev": before}
+        )
+        if estimated is not None:
+            self.fieldcor_gain = round(estimated, 3)
+            self.signal("fieldcor_gain", self.fieldcor_gain, self)
+        for key, value in updated.items():
+            attr = f"fieldcor_{key}"
+            setattr(self, attr, round(value, 4))
+            self.signal(attr, getattr(self, attr), self)
+        self.fieldcor_enabled = True
+        self.signal("fieldcor_enabled", True, self)
+        _table, clipped = self.field_correction_table()
+        sent = self.send_correction_now()
+        worst = max_error(squares)
+        return {
+            "round": number,
+            "previous": current["params"],
+            "updated": updated,
+            "residual": residual,
+            "rms": rms,
+            "gain_before": current["gain"],
+            "gain": gain,
+            "gain_estimated": estimated is not None,
+            "max_error": worst,
+            "done": worst <= DONE_TOLERANCE_MM,
+            "warnings": sanity_warnings(updated, rms),
+            "clipped": clipped,
+            "sent": sent,
+        }
+
+    def _correction_key(self):
+        """What the uploaded correction depends on."""
+        from .fieldcorrection import axis_map_from_view
+
+        return (
+            self.corfile_enabled,
+            self.corfile,
+            self.fieldcor_enabled,
+            tuple(sorted(self.field_correction_params().items())),
+            self.fieldcor_transpose,
+            self.fieldcor_gain,
+            axis_map_from_view(self.view),
+        )
+
+    def send_correction_now(self):
+        """
+        Upload the active correction now if that is safe.
+
+        While the live trace runs it is paused for the upload and restarted
+        afterwards, so the trace shows the new correction. Nothing is sent
+        while a burn is running.
+
+        @return: "sent", "busy" (a job is running) or "offline"
+        """
+        from .livelightjob import LiveLightJob
+
+        if not self.driver.connected:
+            return "offline"
+        connection = self.driver.connection
+        job = self.job
+        if isinstance(job, LiveLightJob) and job.started and not job.stopped:
+            with job.held():
+                connection.abort()
+                connection.send_correction()
+        elif self.spooler.is_idle:
+            connection.send_correction()
+        else:
+            return "busy"
+        self._correction_sent_key = self._correction_key()
+        return "sent"
+
+    @signal_listener("fieldcor_enabled")
+    @signal_listener("fieldcor_scale_x")
+    @signal_listener("fieldcor_scale_y")
+    @signal_listener("fieldcor_trapezoid_x")
+    @signal_listener("fieldcor_trapezoid_y")
+    @signal_listener("fieldcor_bulge_x")
+    @signal_listener("fieldcor_bulge_y")
+    @signal_listener("fieldcor_skew_x")
+    @signal_listener("fieldcor_skew_y")
+    @signal_listener("fieldcor_transpose")
+    @signal_listener("fieldcor_gain")
+    @signal_listener("view;realized")
+    def on_field_correction_changed(self, origin=None, *args):
+        """Send a changed correction shortly after the last change."""
+        if not self.driver.connected:
+            return
+        timer = getattr(self, "_correction_timer", None)
+        if timer is not None:
+            timer.cancel()
+        self._correction_timer = threading.Timer(0.5, self._send_if_changed)
+        self._correction_timer.daemon = True
+        self._correction_timer.start()
+
+    def _send_if_changed(self):
+        try:
+            if self._correction_key() != getattr(self, "_correction_sent_key", None):
+                self.send_correction_now()
+        except (ConnectionError, OSError, RuntimeError):
+            pass
+
+    def reset_field_correction(self):
+        """
+        Start calibration over: identity values, disabled, round history
+        cleared (the table response is kept), blank table sent.
+        """
+        from .fieldcorrection import IDENTITY
+
+        for key, value in IDENTITY.items():
+            attr = f"fieldcor_{key}"
+            setattr(self, attr, value)
+            self.signal(attr, value, self)
+        self.fieldcor_rounds = ""
+        self.fieldcor_enabled = False
+        self.signal("fieldcor_enabled", False, self)
+        return self.send_correction_now()
+
+    def create_field_test_pattern(self, clear=False):
+        """
+        Add the centred calibration pattern (a square with a cross through its
+        centre, see field_test_side) in its own engrave operation.
+        """
+        from meerk40t.core.node.op_engrave import EngraveOpNode
+        from meerk40t.svgelements import Color
+
+        _ = self.kernel.translation
+        elements = self.kernel.elements
+        if clear:
+            elements.clear_operations(fast=True)
+            elements.clear_elements(fast=True)
+        side = self.field_test_side()
+        cx, cy = self.view.iposition(0x8000, 0x8000)
+        s = float(Length(f"{side}mm"))
+        stroke = Color("blue")
+        common = {"stroke": stroke, "stroke_width": elements.default_strokewidth}
+        op = EngraveOpNode(label=_("Field correction test"), color=stroke)
+        elements.op_branch.add_node(op)
+        nodes = [
+            elements.elem_branch.add(
+                type="elem rect",
+                x=cx - s / 2,
+                y=cy - s / 2,
+                width=s,
+                height=s,
+                label=_("Field test {side} mm").format(side=side),
+                **common,
+            ),
+            elements.elem_branch.add(
+                type="elem line",
+                x1=cx - s / 2,
+                y1=cy,
+                x2=cx + s / 2,
+                y2=cy,
+                label=_("Field test middle (horizontal)"),
+                **common,
+            ),
+            elements.elem_branch.add(
+                type="elem line",
+                x1=cx,
+                y1=cy - s / 2,
+                x2=cx,
+                y2=cy + s / 2,
+                label=_("Field test middle (vertical)"),
+                **common,
+            ),
+        ]
+        for node in nodes:
+            op.add_reference(node, 0)
+        self.signal("rebuild_tree")
+        self.signal("refresh_scene", "Scene")
+        return nodes
+
+    def field_correction_table(self, params=None):
+        """
+        Encoded 65x65 correction table from the field correction settings (or
+        ``params``), mapped through this device's flip/swap/rotate.
+
+        @return: (table, clipped)
+        """
+        from .fieldcorrection import DEFAULT_GAIN, axis_map_from_view, build_table
+
+        if params is None:
+            params = self.field_correction_params()
+        return build_table(
+            params,
+            axis_map_from_view(self.view),
+            transpose=self.fieldcor_transpose,
+            gain=self.fieldcor_gain or DEFAULT_GAIN,
+        )
 
     @property
     def safe_label(self):

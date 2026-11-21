@@ -4,6 +4,7 @@ from meerk40t.device.gui.defaultactions import DefaultActionPanel
 from meerk40t.device.gui.effectspanel import EffectsPanel
 from meerk40t.device.gui.formatterpanel import FormatterPanel
 from meerk40t.device.gui.warningpanel import WarningPanel
+from meerk40t.balormk.gui.fieldcorpanel import FieldCorrectionPanel
 from meerk40t.gui.choicepropertypanel import ChoicePropertyPanel
 from meerk40t.gui.icons import icons8_administrative_tools
 from meerk40t.gui.mwindow import MWindow
@@ -54,6 +55,7 @@ class BalorConfiguration(MWindow):
             ("balor-global", _("Global")),
             ("balor-global-timing", _("Timings")),
             ("balor-extra", _("Extras")),
+            ("balor-fieldcor", _("Field Correction")),
             ("balor-effects", _("Effects")),
             ("balor-defaults", _("Operation Defaults")),
             #            ("balor-corfile", _("Correction")),
@@ -110,13 +112,16 @@ class BalorConfiguration(MWindow):
                     injection = injector_cor
                 else:
                     injection = None
-                newpanel = ChoicePropertyPanel(
-                    self,
-                    wx.ID_ANY,
-                    context=self.context,
-                    choices=section,
-                    injector=injection,
-                )
+                if section == "balor-fieldcor":
+                    newpanel = FieldCorrectionPanel(self, context=self.context)
+                else:
+                    newpanel = ChoicePropertyPanel(
+                        self,
+                        wx.ID_ANY,
+                        context=self.context,
+                        choices=section,
+                        injector=injection,
+                    )
                 self.panels.append(newpanel)
                 newpanel.Reparent(self.notebook_main)
                 self.notebook_main.AddPage(newpanel, pagetitle)

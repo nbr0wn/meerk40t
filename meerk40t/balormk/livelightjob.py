@@ -9,6 +9,7 @@ This job works as a spoolerjob. Implementing all the regular calls for being a s
 
 import threading
 import time
+from contextlib import contextmanager
 from math import isinf
 
 import numpy as np
@@ -44,6 +45,10 @@ class LiveLightJob:
         self._signal_mode = True
         # Kernel Job definition
         self.redlight_lock = threading.RLock()
+        # Pausing the trace while other commands (a correction upload) use
+        # the connection: see held().
+        self._hold_requested = threading.Event()
+        self._holding = threading.Event()
         self.redlight_job = Job(
             self.jobevent,
             # interval=0.1,
@@ -201,6 +206,11 @@ class LiveLightJob:
             return
         con = self._connection
         while not self.stopped:
+            if self._hold_requested.is_set():
+                self._holding.set()
+                time.sleep(0.02)
+                continue
+            self._holding.clear()
             if self.changed:
                 # print ("Something changed")
                 with self.redlight_lock:
@@ -233,8 +243,8 @@ class LiveLightJob:
         first = True
         first_x, first_y = None, None
         for i, e in enumerate(self.points):
-            if self.stopped or self.changed:
-                # Abort due to stoppage or change, no sense to continue
+            if self.stopped or self.changed or self._hold_requested.is_set():
+                # Abort due to stoppage, change or hold; no sense to continue
                 return
             if e is None:
                 move = True
@@ -339,6 +349,22 @@ class LiveLightJob:
             self._connection.write_port()
             self._connection = None
             self.service.signal("light_simulate", False)
+
+    @contextmanager
+    def held(self, timeout=2.0):
+        """
+        Pause tracing for the duration of the block, so other commands can use
+        the connection, then restart the trace from scratch (the path is
+        recomputed and the redlight re-initialised).
+        """
+        self._hold_requested.set()
+        try:
+            if self.started and not self.stopped and self._connection is not None:
+                self._holding.wait(timeout)
+            yield
+        finally:
+            self._hold_requested.clear()
+            self.update()
 
     def update(self):
         """Mark the redlight path as changed.

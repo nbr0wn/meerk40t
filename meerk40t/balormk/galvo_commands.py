@@ -791,6 +791,174 @@ def plugin(service, lifecycle):
             else:
                 channel(f"The file at {os.path.realpath(filename)} does not exist.")
 
+    @service.console_argument(
+        "action",
+        type=str,
+        default="status",
+        help="status, apply, test, gain or fit",
+    )
+    @service.console_command(
+        "fieldcorrection",
+        help=_("Generated field correction: status, apply, test, gain, fit"),
+        all_arguments_required=False,
+    )
+    def field_correction(command, channel, _, action="status", remainder=None, **kwgs):
+        """
+        fieldcorrection status   show the values and where the correction comes from
+        fieldcorrection apply    send the active correction to the laser now
+        fieldcorrection test     send a 10% X stretch (only) to measure the table response
+        fieldcorrection gain W0 W1  set the table response from widths without/with test
+        fieldcorrection fit S T B H L R V D1 D2
+            One calibration round. S: side of the centred test pattern (mm),
+            then its measured top, bottom and middle (horizontal) widths, left,
+            right and middle (vertical) heights and the top-left-to-bottom-right
+            and top-right-to-bottom-left diagonals (mm), as shown on screen.
+            Updates the values to cancel the measured error and enables them;
+            from the second round on it also measures the table response.
+        """
+        from meerk40t.core.units import Length
+
+        from .fieldcorrection import FIELDS, predict_square
+
+        def show(params):
+            for axis in ("x", "y"):
+                channel(
+                    f"  {axis.upper()}: scale {params[f'scale_{axis}']:.3f}%  "
+                    f"trapezoid {params[f'trapezoid_{axis}']:+.3f}%  "
+                    f"bulge {params[f'bulge_{axis}']:+.3f}%  "
+                    f"skew {params[f'skew_{axis}']:+.3f}%"
+                )
+
+        def connection():
+            if not service.driver.connected:
+                channel(_("Not connected; the correction is sent on the next connect."))
+                return None
+            return service.driver.connection
+
+        if action == "status":
+            if service.corfile_enabled:
+                channel(f"Correction file in use: {service.corfile}")
+            elif service.fieldcor_enabled:
+                channel("Generated field correction in use:")
+            else:
+                channel("No correction in use (blank table). Values:")
+            show(service.field_correction_params())
+            channel(f"  Table response {service.fieldcor_gain:g}")
+            _table, clipped = service.field_correction_table()
+            if clipped:
+                channel(f"WARNING: {clipped} offsets exceed the board range.")
+            return
+        if action == "apply":
+            status = service.send_correction_now()
+            if status == "sent":
+                channel(_("Correction sent."))
+            elif status == "busy":
+                channel(_("A job is running; try again when it has finished."))
+            else:
+                channel(_("Not connected; the correction is sent on the next connect."))
+            return
+        if action == "test":
+            conn = connection()
+            if conn is None:
+                return
+            table, _clipped = service.field_correction_table({"scale_x": 110.0})
+            with_hold = service.job is not None and hasattr(service.job, "held")
+            if with_hold:
+                with service.job.held():
+                    conn.abort()
+                    conn._write_correction_table(table)
+            else:
+                conn._write_correction_table(table)
+            channel("Test table sent: X (as shown on screen) asked to stretch 10%.")
+            channel(
+                "Trace or mark a centred 50 mm square now and measure its width (W1)."
+            )
+            channel(
+                "Then 'fieldcorrection apply' (or Reset correction) and measure the"
+            )
+            channel("same square without the test table (W0).")
+            channel("  wider: good; narrower: the response sign is wrong;")
+            channel("  slanted: turn on 'Transpose table';  taller instead: report it.")
+            channel("Then run 'fieldcorrection gain W0 W1' to set the table response.")
+            return
+        if action == "gain":
+            try:
+                w0, w1 = (float(v) for v in (remainder or "").split()[:2])
+            except ValueError:
+                channel(
+                    "Usage: fieldcorrection gain W0 W1 (widths without / with the test table)"
+                )
+                return
+            if w0 <= 0:
+                channel("W0 must be positive.")
+                return
+            stretch = w1 / w0 - 1.0
+            if abs(stretch) < 0.005:
+                channel(
+                    "The test table made no measurable difference; check it was sent."
+                )
+                return
+            old = service.fieldcor_gain or -1.0
+            # the test asked for +10%: the board delivered stretch, so the true
+            # response is old * stretch / 0.10
+            new = old * stretch / 0.10
+            service.fieldcor_gain = round(new, 3)
+            service.signal("fieldcor_gain", service.fieldcor_gain, service)
+            channel(
+                f"Table asked for +10%, board gave {stretch * 100:+.1f}%: "
+                f"table response {old:g} -> {service.fieldcor_gain:g}."
+            )
+            return
+        if action == "fit":
+            if service.corfile_enabled:
+                channel(
+                    "Disable the correction file first; fit adjusts the generated correction."
+                )
+                return
+            try:
+                values = [float(v) for v in (remainder or "").split()]
+            except ValueError:
+                channel("fit takes numbers only.")
+                return
+            size = 1 + len(FIELDS)
+            if len(values) != size:
+                channel(f"fit needs {size} numbers: side " + " ".join(FIELDS))
+                return
+            result = service.apply_field_correction_fit([values])
+            lens_mm = Length(service.lens_size).mm
+            pred = predict_square(result["residual"], values[0], lens_mm)
+            channel(f"Round {result['round']}. Measured / model of the measured shape (mm):")
+            channel(
+                "  "
+                + "  ".join(
+                    f"{name} {m:.2f}/{pred[name]:.2f}"
+                    for name, m in zip(FIELDS, values[1:])
+                )
+            )
+            channel(f"Fit residual: {result['rms']:.3f} mm rms")
+            if result["gain_estimated"]:
+                channel(
+                    f"Table response measured: {result['gain_before']:g} -> {result['gain']:g}"
+                )
+            channel("Previous values:")
+            show(result["previous"])
+            channel("New values (enabled):")
+            show(result["updated"])
+            if result["clipped"]:
+                channel(f"WARNING: {result['clipped']} offsets exceed the board range.")
+            if result["sent"] == "sent":
+                channel(_("Correction sent. Mark the pattern again to check."))
+            elif result["sent"] == "busy":
+                channel(
+                    _(
+                        "A job is running; run 'fieldcorrection apply' when it has finished."
+                    )
+                )
+            else:
+                channel(_("Not connected; the correction is sent on the next connect."))
+            return
+        channel(f"Unknown action '{action}'. Use status, apply, test, gain or fit.")
+
     @service.console_command(
         "softreboot",
         help=_("Resets the galvo laser"),
