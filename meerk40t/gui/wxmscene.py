@@ -1700,8 +1700,40 @@ class MeerK40tScenePanel(wx.Panel):
         self.request_refresh()
 
     def pane_show(self, *args):
+        self.focus_bed()
+
+    def focus_bed(self):
+        """Zoom to show the whole bed (plus the zoom margin)."""
+        self._refit_pending = False
+        if self.context is None:
+            return
         zl = self.context.zoom_margin
         self.context(f"scene focus -{zl}% -{zl}% {100 + zl}% {100 + zl}%\n")
+        self._bed_fit = (self._view_key(), tuple(self.GetSize()))
+
+    def _view_key(self):
+        m = self.widget_scene.widget_root.scene_widget.matrix
+        return tuple(round(v, 9) for v in (m.a, m.b, m.c, m.d, m.e, m.f))
+
+    def _refit_bed_on_resize(self):
+        """
+        The first fit happens before the pane has its real size (at startup it
+        is a few pixels across, which leaves the bed zoomed far in). Keep the
+        bed fitted while the pane is resized, until the user zooms or pans.
+        """
+        fit = getattr(self, "_bed_fit", None)
+        if fit is None or getattr(self, "_refit_pending", False):
+            return
+        view, size = fit
+        if tuple(self.GetSize()) == size:
+            return
+        try:
+            if self._view_key() != view:
+                return  # the user has zoomed or panned since the last fit
+        except AttributeError:
+            return
+        self._refit_pending = True
+        wx.CallAfter(self.focus_bed)
 
     def pane_hide(self, *args):
         pass
@@ -1716,6 +1748,7 @@ class MeerK40tScenePanel(wx.Panel):
         if self.context is None:
             return
         self.Layout()
+        self._refit_bed_on_resize()
         # Refresh not needed as scenepanel already does it...
         # self.scene.signal("guide")
         # self.request_refresh()
