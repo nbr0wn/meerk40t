@@ -103,12 +103,12 @@ class PlannerPanel(wx.Panel):
         sizer_main.Add(self.list_command, 2, wx.EXPAND, 0)
 
         sizer_options = wx.BoxSizer(wx.HORIZONTAL)
-        sizer_options.Add(self.panel_optimize, 1, 2, wx.EXPAND, 0)
+        sizer_options.Add(self.panel_optimize, 2, wx.EXPAND, 0)
         sizer_options.Add(self.button_start, 1, wx.EXPAND, 0)
 
         sizer_frame.Add(self.combo_device, 0, wx.EXPAND, 0)
         sizer_frame.Add(sizer_main, 1, wx.EXPAND, 0)
-        sizer_frame.Add(sizer_options, 1, wx.EXPAND, 0)
+        sizer_frame.Add(sizer_options, 0, wx.EXPAND, 0)
 
         self.SetSizer(sizer_frame)
         self.Layout()
@@ -180,7 +180,7 @@ class PlannerPanel(wx.Panel):
             if self.context.auto_spooler:
                 self.context("window open JobSpooler\n")
             try:
-                self.GetParent().Close()
+                wx.GetTopLevelParent(self).Close()
             except (TypeError, AttributeError):
                 pass
             self.context.kernel.busyinfo.end()

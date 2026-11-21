@@ -430,9 +430,11 @@ class MoshiControllerPanel(wx.Panel):
         self.text_usb_log.Show(on)
         self.context.show_usb_log = bool(on)
         if on:
-            self.GetParent().SetSize((_advanced_width, _default_height))
+            top = wx.GetTopLevelParent(self)
+            top.SetSize((_advanced_width, top.GetSize().height))
         else:
-            self.GetParent().SetSize((_simple_width, _default_height))
+            top = wx.GetTopLevelParent(self)
+            top.SetSize((_simple_width, top.GetSize().height))
 
 
 class MoshiControllerGui(MWindow):

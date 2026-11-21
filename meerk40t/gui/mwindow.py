@@ -1,4 +1,5 @@
 import wx
+import wx.aui
 
 from meerk40t.kernel import Module
 
@@ -44,43 +45,137 @@ class MWindow(wx.Frame, Module):
         self.context.themes.set_window_colors(self)
 
     def restore_aspect(self, honor_initial_values=False):
-        width = self._start_width
-        height = self._start_height
-        try:
-            dipsize = self.FromDIP(wx.Size(width, height))
-            d_width = dipsize[0]
-            d_height = dipsize[1]
-        except AttributeError:
-            d_width = width
-            d_height = height
-        if honor_initial_values:
-            width = d_width
-            height = d_height
-        else:
-            # Forget about a default size, try to fit
-            # the content as good as you can.
-            self.sizer.Layout()
-            self.sizer.Fit(self)
-            width, height = self.GetSize()
+        """
+        Record how this window should be sized. The size itself is applied when
+        the window is shown (see fit_to_content), once all content exists.
 
-        if self.window_save:
-            self.window_context.setting(int, "width", width)
-            self.window_context.setting(int, "height", height)
-            if self.window_context.width < 100:
-                self.window_context.width = 100
-            if self.window_context.height < 100:
-                self.window_context.height = 100
-            display_idx = wx.Display.GetFromWindow(self)
-            if display_idx != wx.NOT_FOUND:
-                area = wx.Display(display_idx).GetClientArea()
-                if self.window_context.width >= area[2]:
-                    self.window_context.width = area[2]
-                    self.window_context.setting(int, "x", 0)
-                if self.window_context.height >= area[3]:
-                    self.window_context.height = area[3]
-                    self.window_context.setting(int, "y", 0)
-            self.SetSize((self.window_context.width, self.window_context.height))
+        honor_initial_values=True: the window has elastic content (consoles,
+        lists, previews); the constructor size, or the size the user last left
+        it at, is used as a minimum. Otherwise the window is sized to fit its
+        content exactly.
+        """
+        self._honor_initial = honor_initial_values
         self.Raise()
+
+    def _display_area(self):
+        idx = wx.Display.GetFromWindow(self)
+        if idx == wx.NOT_FOUND and self.GetParent() is not None:
+            idx = wx.Display.GetFromWindow(self.GetParent())
+        if idx == wx.NOT_FOUND:
+            idx = 0
+        return wx.Display(idx).GetClientArea()
+
+    def _content_min_size(self):
+        """
+        Minimum client size needed to show all content without scrolling.
+
+        Scrolled panels report a tiny best size, so for the measurement each one
+        (innermost first) is temporarily given its sizer's minimum as its min
+        size. The previous min sizes are restored afterwards so the panels can
+        still shrink and scroll.
+        """
+        pinned = []
+
+        def pin(win):
+            for child in win.GetChildren():
+                if not isinstance(child, wx.TopLevelWindow):
+                    pin(child)
+            if win is self or not isinstance(win, wx.ScrolledWindow):
+                return
+            sizer = win.GetSizer()
+            if sizer is None:
+                return
+            need = sizer.CalcMin()
+            cur = win.GetMinSize()
+            pinned.append((win, cur))
+            win.SetMinSize(
+                wx.Size(max(cur.width, need.width), max(cur.height, need.height))
+            )
+
+        pin(self)
+        try:
+            sizer = self.GetSizer()
+            if sizer is None:
+                return self.GetBestSize()
+            return sizer.CalcMin()
+        finally:
+            for win, size in reversed(pinned):
+                win.SetMinSize(size)
+
+    def _wrap_in_scroller(self):
+        """Move the window's content into a vertically scrolling container."""
+        sizer = self.GetSizer()
+        scroller = wx.ScrolledWindow(self, wx.ID_ANY, style=wx.VSCROLL)
+        scroller._mk_autoscroll = True
+        for child in list(self.GetChildren()):
+            if child is scroller or isinstance(
+                child, (wx.TopLevelWindow, wx.StatusBar, wx.ToolBar, wx.MenuBar)
+            ):
+                continue
+            child.Reparent(scroller)
+        self.SetSizer(None, False)
+        scroller.SetSizer(sizer)
+        scroller.SetScrollRate(0, self.FromDIP(20))
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(scroller, wx.SizerFlags(1).Expand())
+        self.SetSizer(outer)
+        self.sizer = sizer
+        self.window_context.themes.set_window_colors(scroller)
+        return scroller
+
+    def fit_to_content(self):
+        """
+        Size the window to its content, limited to the display. If the content
+        is taller than the display and does not scroll by itself, it is put in
+        a vertically scrolling container.
+        """
+        area = self._display_area()
+        base = None
+        if getattr(self, "_honor_initial", False):
+            base = self.FromDIP(wx.Size(self._start_width, self._start_height))
+            if self.window_save:
+                base = wx.Size(
+                    self.window_context.setting(int, "width", base.width),
+                    self.window_context.setting(int, "height", base.height),
+                )
+        mgr = wx.aui.AuiManager.GetManager(self)
+        if mgr is not None and mgr.GetManagedWindow() is self:
+            # AUI lays these out itself (main window); keep the stored size.
+            if base is None:
+                base = self.GetSize()
+            self.SetSize(
+                wx.Size(min(base.width, area.width), min(base.height, area.height))
+            )
+            return self.GetSize()
+        want = self.ClientToWindowSize(self._content_min_size())
+        too_tall = want.height > area.height
+        if too_tall:
+            want.width += wx.SystemSettings.GetMetric(wx.SYS_VSCROLL_X, self)
+        if base is not None:
+            want = wx.Size(max(want.width, base.width), max(want.height, base.height))
+        want = wx.Size(max(want.width, 100), max(want.height, 100))
+        size = wx.Size(min(want.width, area.width), min(want.height, area.height))
+        self.SetSize(size)
+        self.Layout()
+        if too_tall:
+            sizer = self.GetSizer()
+            if (
+                sizer is not None
+                and sizer.CalcMin().height > self.GetClientSize().height
+            ):
+                self._wrap_in_scroller()
+                self.Layout()
+        if self.window_save:
+            self.window_context.width, self.window_context.height = self.GetSize()
+        return size
+
+    def _keep_on_display(self):
+        area = self._display_area()
+        x, y = self.GetPosition()
+        w, h = self.GetSize()
+        x = max(area.x, min(x, area.x + area.width - w))
+        y = max(area.y, min(y, area.y + area.height - h))
+        self.SetPosition((x, y))
 
     def on_mouse_left_down(self, event):
         # Convert mac Control+left click into right click
@@ -146,9 +241,22 @@ class MWindow(wx.Frame, Module):
             display = wx.Display.GetFromWindow(self)
             if display == wx.NOT_FOUND:
                 self.SetPosition((x, y))
+        self.fit_to_content()
+        self._keep_on_display()
         self.Show()
         self.Raise()
         self.window_open()
+        # Some windows fill in or resize content in window_open; fit again.
+        wx.CallAfter(self._refit)
+
+    def _refit(self):
+        try:
+            if not self.IsShown():
+                return
+        except RuntimeError:  # destroyed before the call ran
+            return
+        self.fit_to_content()
+        self._keep_on_display()
 
     def module_close(self, *args, shutdown=False, **kwargs):
         self.window_close()

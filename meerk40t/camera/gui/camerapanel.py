@@ -1400,7 +1400,7 @@ class CameraURIPanel(wx.Panel):
         new_uri = self.context.uris[index]
         self.context.console(f"camera{self.index} --uri {new_uri} stop start\n")
         try:
-            self.GetParent().Close()
+            wx.GetTopLevelParent(self).Close()
         except (TypeError, AttributeError):
             pass
 
