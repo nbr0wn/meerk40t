@@ -44,6 +44,7 @@ from meerk40t.gui.icons import (
 )
 from meerk40t.gui.laserrender import DRAW_MODE_ICONS, LaserRender, swizzlecolor
 from meerk40t.gui.mwindow import MWindow
+from meerk40t.gui.uipolish import blend
 from meerk40t.gui.wxutils import (
     StaticBoxSizer,
     create_menu,
@@ -724,6 +725,10 @@ class ShadowTree:
         self._freeze = False
         testsize = dip_size(self.wxtree, 20, 20)
         self.iconsize = testsize[1]
+        # Pen-colour swatch drawn left of each tree icon (see _list_bitmap).
+        self.swatch_width = max(4, round(self.iconsize * 0.4))
+        self.swatch_gap = max(2, round(self.iconsize * 0.15))
+        self._swatch_extra = 0
         self.iconstates = {}
         self.last_call = 0
         self._nodes_to_expand = []
@@ -1412,7 +1417,14 @@ class ShadowTree:
                 # Swap before Destroy: wxtree holds the old ptr until SetImageList replaces it.
                 old_images = self.tree_images
                 self.tree_images = wx.ImageList()
-                self.tree_images.Create(width=self.iconsize, height=self.iconsize)
+                self._swatch_extra = (
+                    self.swatch_width + self.swatch_gap
+                    if self.context.root.tree_colored
+                    else 0
+                )
+                self.tree_images.Create(
+                    width=self.iconsize + self._swatch_extra, height=self.iconsize
+                )
                 self.wxtree.SetImageList(self.tree_images)
                 self.image_cache = []
                 if old_images is not None:
@@ -1618,11 +1630,8 @@ class ShadowTree:
                 else:
                     textcolor = c2
                 wxcolor = wx.Colour(swizzlecolor(textcolor))
-        if self.context.root.tree_colored:
-            try:
-                tree.SetItemTextColour(node._item, wxcolor)
-            except (AttributeError, KeyError, TypeError):
-                pass
+        # Item text keeps the system colour; the pen colour is shown as a
+        # swatch next to the icon instead (see _list_bitmap).
         # We might need to update the decorations for all parent objects
         if not self._freeze:
             informed = []
@@ -1648,13 +1657,17 @@ class ShadowTree:
         if self._freeze or self.context.elements.suppress_updates:
             return
         tree.SetItemBackgroundColour(node_item, None)
+        # Tints of the system highlight colour so system-coloured text stays
+        # readable on light and dark themes.
+        base = tree.GetBackgroundColour()
+        accent = wx.SystemSettings.GetColour(wx.SYS_COLOUR_HIGHLIGHT)
         try:
             if node.highlighted:
-                tree.SetItemBackgroundColour(node_item, wx.LIGHT_GREY)
+                tree.SetItemBackgroundColour(node_item, blend(base, accent, 0.45))
             elif node.emphasized:
-                tree.SetItemBackgroundColour(node_item, wx.Colour(0x80A0A0))
+                tree.SetItemBackgroundColour(node_item, blend(base, accent, 0.3))
             elif node.targeted:
-                tree.SetItemBackgroundColour(node_item, wx.Colour(0xA080A0))
+                tree.SetItemBackgroundColour(node_item, blend(base, accent, 0.15))
         except AttributeError:
             pass
 
@@ -1666,16 +1679,9 @@ class ShadowTree:
         @param color: Color to be set.
         @return:
         """
-        if not self.context.root.tree_colored:
-            return
-        item = node._item
-        if item is None:
-            return
-        if self._freeze or self.context.elements.suppress_updates:
-            return
-        tree = self.wxtree
-        wxcolor = self.safe_color(color)
-        tree.SetItemTextColour(item, wxcolor)
+        # Text stays in the system colour; the pen colour is part of the
+        # node's image (swatch), which set_icon refreshes.
+        return
 
     def create_image_from_node(self, node):
         image = None
@@ -1720,6 +1726,9 @@ class ShadowTree:
                         bitmap=True,
                         keep_ratio=True,
                     )
+            if image is not None and node.type != "reference":
+                # Rendered thumbnail: add the swatch slot.
+                image = self._list_bitmap(image, c)
         else:
             # Establish at least colors (and an image for a reference)
             if node.type.startswith("op ") or node.type.startswith("util "):
@@ -1775,11 +1784,12 @@ class ShadowTree:
                     # has not been found yet...
                     img_obj = self.default_images[found]
                     image = img_obj.GetBitmap(
-                        color=c,
+                        color=self._icon_color(),
                         resize=(self.iconsize, self.iconsize),
                         noadjustment=True,
                         buffer=1,
                     )
+                    image = self._list_bitmap(image, c)
                     cached_id = self.tree_images.Add(bitmap=image)
                     # print(f"Store id {cached_id} for {c} - {found}")
                     self.image_cache.append((found, c, image, cached_id))
@@ -1852,6 +1862,7 @@ class ShadowTree:
             if image_id >= self.tree_images.ImageCount:
                 image_id = -1
                 # Reset Image Node in List
+            icon = self._list_bitmap(icon, None)
             if image_id < 0:
                 image_id = self.tree_images.Add(bitmap=icon)
             else:
@@ -1859,6 +1870,55 @@ class ShadowTree:
 
             tree.SetItemImage(item, image=image_id)
         return image_id
+
+    def _icon_color(self):
+        """Colour for tree icons: the tree's (system) text colour."""
+        fg = self.wxtree.GetForegroundColour()
+        return Color(fg.Red(), fg.Green(), fg.Blue())
+
+    def _list_bitmap(self, bitmap, pen):
+        """
+        Image-list entry for a node: a swatch of the pen colour (blank when the
+        node has none) followed by the icon. Without swatches (tree_colored
+        off) the icon is returned as is.
+        """
+        extra = self._swatch_extra
+        if not extra or bitmap is None or not bitmap.IsOk():
+            return bitmap
+        size = self.iconsize
+        width = size + extra
+        out = wx.Image(width, size)
+        out.InitAlpha()
+        out.SetAlpha(bytes(width * size))
+        icon = bitmap.ConvertToImage()
+        if not icon.HasAlpha():
+            icon.InitAlpha()
+        out.Paste(
+            icon,
+            extra + (size - icon.GetWidth()) // 2,
+            (size - icon.GetHeight()) // 2,
+            wx.IMAGE_ALPHA_BLEND_COMPOSE,
+        )
+        rgb = None
+        if pen is not None:
+            try:
+                if pen.argb is not None:
+                    rgb = (pen.red, pen.green, pen.blue)
+            except AttributeError:
+                rgb = None
+        if rgb is not None:
+            fg = self.wxtree.GetForegroundColour()
+            bg = self.wxtree.GetBackgroundColour()
+            edge = tuple((a + b) // 2 for a, b in zip(fg.Get(False), bg.Get(False)))
+            top = round(size * 0.15)
+            bottom = size - top - 1
+            right = self.swatch_width - 1
+            for y in range(top, bottom + 1):
+                for x in range(right + 1):
+                    border = x in (0, right) or y in (top, bottom)
+                    out.SetRGB(x, y, *(edge if border else rgb))
+                    out.SetAlpha(x, y, 255)
+        return wx.Bitmap(out)
 
     def update_op_labels(self):
         # Walk Python op_branch instead of wxTree; GetItemData on stale handles segfaults.
@@ -2093,12 +2153,6 @@ class ShadowTree:
                 else:
                     textcolor = c2
                 wxcolor = wx.Colour(swizzlecolor(textcolor))
-        if self.context.root.tree_colored:
-            try:
-                self.wxtree.SetItemTextColour(node._item, wxcolor)
-            except (AttributeError, KeyError, TypeError):
-                pass
-
         state_num = -1
         if node is self.elements.get(type="branch ops"):
             unassigned, unburnt = self.elements.have_unburnable_elements()
