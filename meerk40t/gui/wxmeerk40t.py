@@ -1388,100 +1388,43 @@ MEERK40T_HOST = "dev.meerk40t.com"
 
 def send_file_to_developers(filename):
     """
-    Loads a file to send data to the developers.
+    Sending files to the developers is disabled in this build; see
+    send_data_to_developers.
 
-    @param filename: file to send
+    @param filename: file that would have been sent
     @return:
     """
     try:
         with open(filename) as f:
             data = f.read()
-    except:
+    except OSError:
         return  # There is no file, there is no data.
     send_data_to_developers(filename, data)
 
 
 def send_data_to_developers(filename, data):
     """
-    Sends crash log to a server using rfc1341 7.2 The multipart Content-Type
-    https://www.w3.org/Protocols/rfc1341/7_2_Multipart.html
+    Sending crash logs and reports to the MeerK40t server is disabled in this
+    build. The data is kept locally: written to ``filename`` (in the working
+    directory) if that file does not exist yet, and the user is told where.
 
-    @param filename: filename to use when sending file
-    @param data: data to send
+    @param filename: filename the data would have been sent under
+    @param data: data that would have been sent
     @return:
     """
-    import socket
-
-    host = MEERK40T_HOST  # Replace with the actual host
-    port = 80  # Replace with the actual port
-
-    # Construct the HTTP request
-    boundary = "----------------meerk40t-boundary"
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-        f"Content-Type: text/plain\r\n"
-        "\r\n"
-        f"{data}\r\n"
-        f"--{boundary}--\r\n"
-    )
-
-    headers = (
-        f"POST /upload HTTP/1.1\r\n"
-        f"Host: {host}\r\n"
-        "User-Agent: meerk40t/1.0.0\r\n"
-        f"Content-Type: multipart/form-data; boundary={boundary}\r\n"
-        f"Content-Length: {len(body)}\r\n"
-        "\r\n"
-    )
-
+    path = os.path.abspath(filename)
     try:
-        # Create a socket connection
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
-            client_socket.connect((host, port))
-
-            # Send the request
-            request = f"{headers}{body}"
-            client_socket.sendall(request.encode())
-
-            # Receive and print the response
-            response = client_socket.recv(4096)
-            response = response.decode("utf-8", errors="ignore")
-    except Exception:
-        response = ""
-
-    response_lines = response.split("\n")
-    http_code = response_lines[0]
-
-    print(response)
-
-    if http_code.startswith("HTTP/1.1 200 OK"):
-        message = response_lines[-1]
-        dlg = wx.MessageDialog(
-            None,
-            _("We got your message. Thank you for helping\n\n") + message,
-            _("Thanks"),
-            wx.OK,
-        )
-        dlg.ShowModal()
-        dlg.Destroy()
-    else:
-        # print(response)
-        MEERK40T_ISSUES = "https://github.com/meerk40t/meerk40t/issues"
-        dlg = wx.MessageDialog(
-            None,
-            _(
-                "We're sorry, that didn't work. Raise an issue on the github please.\n\n "
-                "The log file will be in your working directory.\n"
-            )
-            + MEERK40T_ISSUES
-            + "\n\n"
-            + str(http_code),
-            _("Thanks"),
-            wx.OK,
-        )
-        dlg.ShowModal()
-        dlg.Destroy()
+        if not os.path.exists(path):
+            with open(path, "w", encoding="utf8") as f:
+                f.write(data)
+    except OSError:
+        path = None
+    message = _("Sending reports to the MeerK40t developers is disabled.")
+    if path is not None:
+        message += "\n\n" + _("The report was saved to:") + "\n" + path
+    dlg = wx.MessageDialog(None, message, _("Report not sent"), wx.OK)
+    dlg.ShowModal()
+    dlg.Destroy()
 
 
 in_error_dialog = False
@@ -1515,30 +1458,23 @@ def handleGUIException(exc_type, exc_value, exc_traceback):
         info.SetValue(body)
         sizer.Add(info, 5, wx.EXPAND, 0)
         btnsizer = wx.StdDialogButtonSizer()
-        btn_yes = wxButton(dlg, wx.ID_YES)
-        btn_yes.SetDefault()
-        btnsizer.AddButton(btn_yes)
-        btn_no = wxButton(dlg, wx.ID_NO)
-        btnsizer.AddButton(btn_no)
+        btn_ok = wxButton(dlg, wx.ID_OK, _("Continue"))
+        btn_ok.SetDefault()
+        btnsizer.AddButton(btn_ok)
         btn_cancel = wxButton(dlg, wx.ID_CANCEL, _("Quit"))
         btnsizer.AddButton(btn_cancel)
         btnsizer.Realize()
         sizer.Add(btnsizer, 0, wx.EXPAND, 0)
-        btnsizer.SetAffirmativeButton(btn_yes)
-        btnsizer.SetNegativeButton(btn_no)
+        btnsizer.SetAffirmativeButton(btn_ok)
         btnsizer.SetCancelButton(btn_cancel)
 
-        def close_yes(event):
-            dlg.EndModal(wx.ID_YES)
-
-        def close_no(event):
-            dlg.EndModal(wx.ID_NO)
+        def close_ok(event):
+            dlg.EndModal(wx.ID_OK)
 
         def close_cancel(event):
             wx.Abort()
 
-        dlg.Bind(wx.EVT_BUTTON, close_yes, btn_yes)
-        dlg.Bind(wx.EVT_BUTTON, close_no, btn_no)
+        dlg.Bind(wx.EVT_BUTTON, close_ok, btn_ok)
         dlg.Bind(wx.EVT_BUTTON, close_cancel, btn_cancel)
         dlg.SetSizer(sizer)
         sizer.Fit(dlg)
@@ -1626,17 +1562,12 @@ def handleGUIException(exc_type, exc_value, exc_traceback):
         # I already crashed once, if there's another here just ignore it.
         pass
 
-    # Ask to send file.
-    message = _(
-        "The bad news is that MeerK40t encountered a crash, and the developers apologise for this bug!\n\n" +
-        "The good news is that you can help us fix this bug by anonymously sending us the crash details."
-    )
-    message += "\n" + _(
-        "Only the crash details below are sent. No data from your MeerK40t project is sent. No "
-        + "personal information is sent either.\n"
-        + "Send the following data to the MeerK40t team?"
-    )
-    caption = _("Crash Detected! Send Log?")
+    # Show the crash; reports are never sent anywhere (send_data_to_developers
+    # is disabled), the log stays in the file written above.
+    message = _("MeerK40t encountered an error.")
+    message += "\n" + _("The details below were saved to:") + "\n"
+    message += os.path.abspath(filename)
+    caption = _("Crash Detected")
     data = error_log
     if variable_info:
         data += "\n" + variable_info
@@ -1644,11 +1575,8 @@ def handleGUIException(exc_type, exc_value, exc_traceback):
         dlg = _extended_dialog(caption, message, data)
         answer = dlg.ShowModal()
         dlg.Destroy()
-    except Exception as e:
-        answer = wx.ID_NO
-    # print (answer)
+    except Exception:
+        answer = wx.ID_OK
     in_error_dialog = False
-    if answer in (wx.ID_YES, wx.ID_OK, wx.ID_CLOSE):
-        send_data_to_developers(filename, data)
     if answer == wx.ID_CANCEL:
         wx.Abort()
