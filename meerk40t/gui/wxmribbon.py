@@ -730,6 +730,11 @@ class MKRibbonBarPanel(RibbonBarPanel):
             return
         self.apply_enable_rules()
 
+    @signal_listener("pipe;usb_status")
+    def on_connection_status(self, origin, *args):
+        # Status-coloured buttons (Connect) read the state when painted.
+        self.redrawn()
+
     @signal_listener("icons")
     def on_requested_change(self, origin, node=None, *args):
         if self.context.elements.suppress_updates:

@@ -2534,6 +2534,8 @@ class MeerK40t(MWindow):
         kernel.register(
             "button/basicediting/Duplicate",
             {
+                # After Paste and any device button (e.g. galvo Center).
+                "priority": 1,
                 "label": _("Grid"),
                 "icon": icon_copies,
                 "tip": _("Create copies of the current selection"),

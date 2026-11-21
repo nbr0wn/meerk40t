@@ -33,14 +33,52 @@ def plugin(service, lifecycle):
 
         _ = service.kernel.translation
 
+        def connection_state():
+            """'connected', 'connecting' or 'disconnected'."""
+            driver = service.driver
+            try:
+                if driver.connected:
+                    return "connected"
+                if driver.connection.is_connecting:
+                    return "connecting"
+            except AttributeError:
+                pass
+            return "disconnected"
+
+        connect_colours = {
+            "connected": wx.Colour(0x00, 0xDF, 0x00),
+            "connecting": wx.Colour(0xDF, 0xDF, 0x00),
+            "disconnected": wx.Colour(0xFF, 0x50, 0x50),
+        }
+
+        def toggle_connection(event=None):
+            """Same as the Controller window's connection button."""
+            controller = service.driver.connection
+            state = connection_state()
+            if state == "connecting":
+                controller.abort_connect()
+                controller.set_disable_connect(False)
+            elif state == "connected":
+                service("usb_disconnect\n")
+                controller.set_disable_connect(False)
+            else:
+                controller.set_disable_connect(False)
+                service("usb_connect\n")
+
         service.register(
             "button/control/Controller",
             {
-                "label": _("Controller"),
+                "label": _("Connect"),
                 "icon": icons8_connected,
-                "tip": _("Opens Controller Window"),
+                "tip": _(
+                    "Connect to or disconnect from the laser. Green: connected, "
+                    "yellow: connecting (click to abort), red: not connected. "
+                    "Right-click opens the Controller window."
+                ),
                 "help": "devicebalor",
-                "action": lambda e: service("window toggle Controller\n"),
+                "action": toggle_connection,
+                "action_right": lambda e: service("window toggle Controller\n"),
+                "background": lambda: connect_colours[connection_state()],
             },
         )
         kernel = service.kernel
@@ -161,8 +199,10 @@ def plugin(service, lifecycle):
             },
         )
         service.register(
-            "button/control/Center",
+            "button/basicediting/Center",
             {
+                # Between Paste (priority 0) and Grid (priority 1).
+                "priority": 0.5,
                 "label": _("Center"),
                 "icon": icons8_center_of_gravity,
                 "tip": _("Center selection on laserbed"),

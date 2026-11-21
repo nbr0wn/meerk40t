@@ -58,6 +58,27 @@ COLOR_MODE_COLOR = 1
 COLOR_MODE_DARK = 2
 
 
+
+def button_background(button):
+    """
+    Optional status colour of a button: the description's "background" entry,
+    a callable returning a wx.Colour (or None for the normal face).
+    """
+    getter = button.button_dict.get("background") if button.button_dict else None
+    if getter is None:
+        return None
+    try:
+        colour = getter()
+    except (AttributeError, TypeError, RuntimeError):
+        return None
+    if colour is None:
+        return None
+    return wx.Colour(colour)
+
+
+def _colour_key(colour):
+    return None if colour is None else colour.GetRGB()
+
 class DropDown:
     """DropDown - User interface panel for laser cutting operations
     **Technical Purpose:**
@@ -2047,6 +2068,7 @@ class Art:
         dc.SetBrush(wx.Brush(self.button_face))
         dc.SetPen(wx.Pen(self.button_face, 1))  # Subtle border matching button face
         dc.SetTextForeground(self.text_color)
+        background = button_background(button)
         if not button.enabled:
             dc.SetBrush(wx.Brush(self.inactive_background))
             dc.SetPen(
@@ -2059,6 +2081,18 @@ class Art:
         if self.hover_button is button and self.hover_dropdown is None:
             dc.SetBrush(wx.Brush(self.button_face_hover))
             dc.SetPen(wx.Pen(self.black_color))
+        if background is not None and button.enabled:
+            # Status button (e.g. connection state): its own colour, lighter
+            # on hover, with dark text for contrast.
+            hover = self.hover_button is button and self.hover_dropdown is None
+            face = (
+                wx.Colour(*(min(255, c + 40) for c in background.Get(False)))
+                if hover
+                else background
+            )
+            dc.SetBrush(wx.Brush(face))
+            dc.SetPen(wx.Pen(self.black_color))
+            dc.SetTextForeground(wx.BLACK)
 
         # Draw background
         dc.DrawRoundedRectangle(int(x), int(y), w, h, self.rounded_radius)
@@ -2133,6 +2167,7 @@ class Art:
             self.all_labels_fit,
             self.label_reserve,
             button.icon_size,  # Icon size affects rendering
+            _colour_key(button_background(button)),  # Status colour, if any
         )
 
         # Try to get cached rendering
